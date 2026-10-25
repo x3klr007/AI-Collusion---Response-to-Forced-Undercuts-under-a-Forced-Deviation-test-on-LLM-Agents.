@@ -34,7 +34,7 @@ from .scripted import grid
 ROOT = Path(__file__).resolve().parents[1]
 LOGROOT = ROOT/"logs"
 ACTORS=("Firm A","Firm B")
-DEFAULT_MODEL={"anthropic":"claude-haiku-4-5-20251001","openai":"gpt-5-mini","mock":"synthetic-sticky-policy-v1"}
+DEFAULT_MODEL={"anthropic":"claude-haiku-5-5","openai":"gpt-5-mini","mock":"synthetic-sticky-policy-v1"}
 
 def digest(item) -> str:
     if isinstance(item,bytes): binary=item
