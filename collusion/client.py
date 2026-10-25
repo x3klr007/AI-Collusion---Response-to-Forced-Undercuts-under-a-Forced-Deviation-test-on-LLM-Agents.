@@ -19,6 +19,9 @@ from typing import Any
 
 from .market import Market
 
+class NonRetryableProviderResponse(RuntimeError):
+    """Fail fast when repeating a request cannot repair the provider error."""
+
 def validate_reply(raw: str) -> dict:
     try:
         item = json.loads(raw.strip())
@@ -116,9 +119,12 @@ class APIClient:
             url="https://api.anthropic.com/v1/messages"
             headers={"x-api-key":self.key,"anthropic-version":"2023-06-01"}
             payload={"model":self.model,"max_tokens":self.max_tokens,
-                     "temperature":self.temperature,
                      "system":SCHEMA+"\n"+P1,
                      "messages":[{"role":"user","content":prompt}]}
+            if self.model.startswith("claude-haiku-5-5"):
+                payload["output_config"]={"effort":"medium"}
+            else:
+                payload["temperature"]=self.temperature
         else:
             url="https://api.openai.com/v1/chat/completions"
             headers={"Authorization":"Bearer "+self.key}
@@ -133,11 +139,15 @@ class APIClient:
         for attempt in range(3):
             try:
                 resp=await self.http.post(url,headers=headers,json=payload)
-                if resp.status_code in (429,500,502,503,504) and attempt<2:
+                if resp.status_code in (408,429,500,502,503,504,529) and attempt<2:
                     await asyncio.sleep(2**attempt)
                     continue
+                if 400 <= resp.status_code < 500 and resp.status_code not in (408,429):
+                    raise NonRetryableProviderResponse(f"HTTP {resp.status_code}; check model or request parameters")
                 resp.raise_for_status()
                 data=resp.json()
+                if self.provider=="anthropic" and data.get("stop_reason") in ("max_tokens","model_context_window_exceeded"):
+                    raise NonRetryableProviderResponse(f"response ended with {data['stop_reason']}; revise max_tokens or effort before repeating")
                 if self.provider=="anthropic":
                     blocks=data.get("content",[])
                     content="\n".join(b.get("text","") for b in blocks if b.get("type")=="text")
@@ -149,7 +159,12 @@ class APIClient:
                 meta={"provider":self.provider,"model":self.model,
                       "usage":usage,"retry_attempts":attempt}
                 if "seed" in payload: meta["call_seed"]=payload["seed"]
+                meta.update({"resolved_model":data.get("model",self.model),
+                             "provider_response_id":data.get("id"),
+                             "stop_reason":data.get("stop_reason")})
                 return validate_reply(content),meta
+            except NonRetryableProviderResponse as exc:
+                raise RuntimeError(f"Non-retryable model response; provider={self.provider}: {exc}") from exc
             except Exception as exc:
                 if attempt == 2:
                     raise RuntimeError(f"Model request failed; provider={self.provider},"
